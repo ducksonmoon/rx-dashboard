@@ -9,10 +9,6 @@ This project demonstrates how to build a real-time dashboard using reactive prog
 - Price change alerts
 - Connection status monitoring
 
-## Demo
-
-![Dashboard Demo](https://ducksonmoon.ir/path-to-demo-image.gif)
-
 ## Prerequisites
 
 - Node.js (v14+)
