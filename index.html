@@ -3,109 +3,146 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rx Dashboard</title>
+    <title>Crypto Dashboard</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
           Oxygen, Ubuntu, Cantarell, sans-serif;
-        background: #f5f5f5;
-        padding: 20px;
-      }
-      .dashboard {
-        background: white;
-        border-radius: 8px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        padding: 20px;
-        max-width: 800px;
+        max-width: 1200px;
         margin: 0 auto;
+        padding: 20px;
+        background: #f5f5f5;
+        color: #333;
       }
-      .header {
+
+      h1 {
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      .dashboard {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 20px;
+      }
+
+      .crypto-card {
+        background: white;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        transition: transform 0.2s;
+      }
+
+      .crypto-card:hover {
+        transform: translateY(-5px);
+      }
+
+      .price {
+        font-size: 24px;
+        font-weight: bold;
+      }
+
+      .price-change {
+        font-weight: bold;
+      }
+
+      .rising {
+        color: #4caf50;
+      }
+
+      .falling {
+        color: #f44336;
+      }
+
+      .volume-bar {
+        height: 10px;
+        margin-top: 10px;
+        background: #e0e0e0;
+        border-radius: 5px;
+        overflow: hidden;
+      }
+
+      .volume-indicator {
+        height: 100%;
+        background: #2196f3;
+        width: 0;
+        transition: width 0.5s ease-out;
+      }
+
+      .status-bar {
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 20px;
-        padding-bottom: 10px;
-        border-bottom: 1px solid #eee;
+        background: white;
+        padding: 10px 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
       }
-      .crypto-list {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 15px;
-        margin-bottom: 20px;
+
+      #connection-status {
+        display: inline-block;
+        padding: 8px 16px;
+        border-radius: 20px;
+        background: #ccc;
+        cursor: pointer;
       }
-      .crypto-item {
-        background: #f9f9f9;
+
+      #connection-status.connected {
+        background: #4caf50;
+        color: white;
+      }
+
+      #connection-status.disconnected {
+        background: #f44336;
+        color: white;
+      }
+
+      #connection-status.reconnecting {
+        background: #ff9800;
+        color: white;
+      }
+
+      #alerts {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 300px;
+      }
+
+      .alert {
+        background: white;
+        border-left: 5px solid #ff9800;
         padding: 15px;
-        border-radius: 4px;
-        display: flex;
-        justify-content: space-between;
+        margin-top: 10px;
+        border-radius: 5px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        animation: slideIn 0.3s ease-out;
       }
-      .price-up {
-        color: #4caf50;
-      }
-      .price-down {
-        color: #f44336;
-      }
-      .status {
-        display: flex;
-        justify-content: space-between;
-        padding: 10px 0;
-        font-size: 14px;
-      }
-      .connected {
-        color: #4caf50;
-      }
-      .disconnected {
-        color: #f44336;
-      }
-      .alerts {
-        margin-top: 20px;
-        padding-top: 10px;
-        border-top: 1px solid #eee;
-      }
-      .alert-item {
-        padding: 8px 12px;
-        background: #fff9c4;
-        border-left: 4px solid #ffc107;
-        margin-bottom: 8px;
-        font-size: 14px;
-      }
-      .volume-bar {
-        height: 8px;
-        background: #e0e0e0;
-        border-radius: 4px;
-        overflow: hidden;
-        margin-top: 5px;
-      }
-      .volume-fill {
-        height: 100%;
-        background: #2196f3;
-        width: 0%; /* Will be set dynamically */
+
+      @keyframes slideIn {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="dashboard">
-      <div class="header">
-        <h2>Crypto Dashboard</h2>
-        <div id="connection-status">Connecting...</div>
-      </div>
+    <h1>Crypto Dashboard</h1>
 
-      <div class="crypto-list" id="crypto-list">
-        <!-- Crypto items will be inserted here -->
-      </div>
-
-      <div class="status">
-        <div id="connection-info">Connecting to server...</div>
-        <div id="last-update">Waiting for data...</div>
-      </div>
-
-      <div class="alerts">
-        <h3>Recent Alerts</h3>
-        <div id="alerts-container">
-          <!-- Alerts will be inserted here -->
-        </div>
-      </div>
+    <div class="status-bar">
+      <div>Last updated: <span id="last-updated">--</span></div>
+      <div id="connection-status">Connecting...</div>
     </div>
+
+    <div class="dashboard" id="dashboard"></div>
+
+    <div id="alerts"></div>
   </body>
 </html>

@@ -1,271 +1,250 @@
-import { Subject, merge, interval } from "rxjs";
+import { fromEvent, Subject, merge } from "rxjs";
 import {
   map,
-  buffer,
-  scan,
-  filter,
   debounceTime,
-  sample,
   distinctUntilChanged,
+  throttleTime,
+  takeUntil,
+  scan,
+  buffer,
+  switchMap,
+  tap,
 } from "rxjs/operators";
 
 export class Dashboard {
   constructor(websocketService) {
     this.websocketService = websocketService;
+    this.destroy$ = new Subject();
+    this.lastPrices = new Map();
 
-    // Track manual refresh requests
-    this.refreshSubject = new Subject();
+    // DOM references
+    this.dashboardEl = document.getElementById("dashboard");
+    this.lastUpdatedEl = document.getElementById("last-updated");
+    this.connectionStatusEl = document.getElementById("connection-status");
+    this.alertsEl = document.getElementById("alerts");
 
-    // Set up all the observables
-    this.setupObservables();
-
-    // Set up DOM elements
-    this.cryptoListElem = document.getElementById("crypto-list");
-    this.connectionStatusElem = document.getElementById("connection-status");
-    this.connectionInfoElem = document.getElementById("connection-info");
-    this.lastUpdateElem = document.getElementById("last-update");
-    this.alertsContainerElem = document.getElementById("alerts-container");
-
-    // Initialize the dashboard
     this.initialize();
   }
 
-  setupObservables() {
-    // Get the base data stream
-    this.data$ = this.websocketService.getData();
+  initialize() {
+    // Observe connection status changes
+    this.websocketService
+      .getConnectionStatus()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((status) => {
+        this.updateConnectionStatus(status);
+      });
 
-    // Transform data for UI updates (with throttling)
-    this.uiData$ = this.data$.pipe(
-      sample(interval(1000)) // Only update UI max once per second to prevent flicker
-    );
+    // Main data stream
+    const data$ = this.websocketService.getData();
 
-    // Create price alert observable using a buffer strategy
-    this.priceAlerts$ = this.data$.pipe(
-      // First, create a stream of all crypto updates
-      map((data) => data.cryptos),
-      // Explode the array (turn one array into multiple emissions, one for each crypto)
-      map((cryptos) => cryptos.flatMap((crypto) => ({ ...crypto }))),
-      // Buffer for 5 minutes for each symbol separately
-      buffer(interval(5 * 60 * 1000)), // 5 minutes buffer
-      // Only continue if buffer has items
-      filter((buffer) => buffer.length > 0),
-      // Group buffered items by symbol
-      map((buffer) => {
-        // Group by symbol
-        const bySymbol = buffer.reduce((acc, item) => {
-          if (!acc[item.symbol]) acc[item.symbol] = [];
-          acc[item.symbol].push(item);
-          return acc;
-        }, {});
-
-        // For each symbol, check if there's a significant price change
-        return Object.entries(bySymbol)
-          .map(([symbol, items]) => {
-            if (items.length < 2) return null;
-
-            const first = items[0].price;
-            const last = items[items.length - 1].price;
-            const pctChange = ((last - first) / first) * 100;
-
-            // Only alert if change is significant (more than 1% in 5 min)
-            if (Math.abs(pctChange) >= 1) {
-              return {
-                symbol,
-                pctChange: pctChange.toFixed(2),
-                isUp: pctChange > 0,
-                timestamp: Date.now(),
-              };
-            }
-            return null;
-          })
-          .filter((item) => item !== null);
-      }),
-      // Flatten the results
-      map((alerts) => alerts.flat())
-    );
-
-    // Create volume alert observable
-    this.volumeAlerts$ = this.data$.pipe(
-      // Debounce so we don't process every single update
-      debounceTime(10000), // Check every 10 seconds
-      // Track volume state over time using scan
-      scan(
-        (acc, data) => {
-          // Initialize or update with the latest data
-          if (!acc.prev) {
-            return {
-              prev: data.cryptos,
-              alerts: [],
-            };
-          }
-
-          // Compare current volumes with previous
-          const alerts = data.cryptos
-            .map((current) => {
-              const prev = acc.prev.find((p) => p.symbol === current.symbol);
-              if (!prev) return null;
-
-              // Check for significant volume increase (20%+)
-              const volumeIncrease =
-                (current.volume - prev.volume) / prev.volume;
-              if (volumeIncrease > 0.2) {
-                // 20% threshold
-                return {
-                  symbol: current.symbol,
-                  volumeIncrease: (volumeIncrease * 100).toFixed(0),
-                  timestamp: Date.now(),
-                };
-              }
-              return null;
-            })
-            .filter((alert) => alert !== null);
-
-          return {
-            prev: data.cryptos,
-            alerts,
-          };
-        },
-        { prev: null, alerts: [] }
-      ),
-      // Only emit when there are new alerts
-      filter((result) => result.alerts.length > 0),
-      map((result) => result.alerts)
-    );
-
-    // Connection status with simpler display text
-    this.connectionStatus$ = this.websocketService.getConnectionStatus().pipe(
-      map((status) => {
-        switch (status) {
-          case "connected":
-            return { text: "Connected", class: "connected" };
-          case "disconnected":
-            return { text: "Disconnected", class: "disconnected" };
-          case "connecting":
-            return { text: "Connecting...", class: "disconnected" };
-          case "reconnecting":
-            return { text: "Reconnecting...", class: "disconnected" };
-          case "error":
-            return { text: "Connection Error", class: "disconnected" };
-          default:
-            return { text: "Unknown", class: "" };
-        }
-      })
-    );
-
-    // Last update time
-    this.lastUpdate$ = this.data$.pipe(
-      map((data) => {
-        const time = new Date(data.timestamp);
-        return time.toLocaleTimeString();
-      })
-    );
-
-    // Combine all alerts into a single stream for the UI
-    this.allAlerts$ = merge(
-      this.priceAlerts$.pipe(
-        map((alerts) =>
-          alerts.map((a) => ({
-            text: `${a.symbol} price ${
-              a.isUp ? "jumped" : "dropped"
-            } ${Math.abs(a.pctChange)}% in last 5 minutes`,
-            timestamp: a.timestamp,
-            type: "price",
-          }))
-        )
-      ),
-      this.volumeAlerts$.pipe(
-        map((alerts) =>
-          alerts.map((a) => ({
-            text: `${a.symbol} volume spike detected: +${a.volumeIncrease}%`,
-            timestamp: a.timestamp,
-            type: "volume",
-          }))
-        )
+    // Update dashboard with latest prices
+    data$
+      .pipe(
+        takeUntil(this.destroy$)
+        // This is where reactive programming really helps - we can derive multiple streams
+        // from a single data source for different purposes
       )
-    ).pipe(
-      scan((allAlerts, newAlerts) => {
-        // Add new alerts and keep the list at max 5 items
-        return [...newAlerts, ...allAlerts].slice(0, 5);
-      }, [])
-    );
+      .subscribe((data) => {
+        this.updateDashboard(data);
+      });
+
+    // Create a separate stream just for price alerts
+    // This shows the power of creating derived streams with different operators
+    data$
+      .pipe(
+        takeUntil(this.destroy$),
+        // Use scan to keep track of previous values and detect big changes
+        // Think of scan like a snowball rolling downhill, gathering data as it goes
+        scan(
+          (acc, data) => {
+            const alerts = [];
+
+            data.cryptos.forEach((crypto) => {
+              const prev = acc.prices.get(crypto.symbol);
+              if (prev) {
+                // Calculate percent change since last update
+                const pctChange = ((crypto.price - prev) / prev) * 100;
+
+                // Alert on significant changes (more than 0.5% in a single update)
+                if (Math.abs(pctChange) > 0.5) {
+                  alerts.push({
+                    symbol: crypto.symbol,
+                    price: crypto.price,
+                    change: pctChange,
+                    isPositive: pctChange > 0,
+                  });
+                }
+              }
+
+              // Update our tracking map with latest price
+              acc.prices.set(crypto.symbol, crypto.price);
+            });
+
+            return {
+              prices: acc.prices,
+              alerts,
+            };
+          },
+          { prices: new Map(), alerts: [] }
+        ),
+        // Only proceed when there are alerts
+        map((result) => result.alerts),
+        filter((alerts) => alerts.length > 0)
+      )
+      .subscribe((alerts) => {
+        this.showAlerts(alerts);
+      });
+
+    // Create a separate stream for volume analysis
+    data$
+      .pipe(
+        takeUntil(this.destroy$),
+        map((data) => {
+          // Calculate total volume across all cryptos
+          const totalVolume = data.cryptos.reduce(
+            (sum, crypto) => sum + crypto.volume,
+            0
+          );
+          return {
+            totalVolume,
+            cryptos: data.cryptos,
+          };
+        })
+        // We could do sophisticated volume analysis here
+      )
+      .subscribe((volumeData) => {
+        // For now, we're just using this for our UI volume bars
+        // but in a real app, you might generate volume-based trading signals
+      });
   }
 
-  initialize() {
-    // Subscribe to UI updates
-    this.uiData$.subscribe((data) => this.updateCryptoList(data));
+  updateDashboard(data) {
+    // Update "last updated" timestamp
+    const date = new Date(data.timestamp);
+    this.lastUpdatedEl.textContent = date.toLocaleTimeString();
 
-    // Subscribe to connection status
-    this.connectionStatus$.subscribe((status) => {
-      this.connectionStatusElem.textContent = status.text;
-      this.connectionStatusElem.className = status.class;
-      this.connectionInfoElem.textContent =
-        status.class === "connected"
-          ? "Live data streaming"
-          : "Waiting for connection...";
-    });
+    // Update or create cards for each cryptocurrency
+    data.cryptos.forEach((crypto) => {
+      let cardEl = document.getElementById(`crypto-${crypto.symbol}`);
 
-    // Subscribe to last update time
-    this.lastUpdate$.subscribe((time) => {
-      this.lastUpdateElem.textContent = `Last update: ${time}`;
-    });
+      // If this crypto doesn't have a card yet, create one
+      if (!cardEl) {
+        cardEl = document.createElement("div");
+        cardEl.id = `crypto-${crypto.symbol}`;
+        cardEl.className = "crypto-card";
+        cardEl.innerHTML = `
+          <h2>${crypto.symbol}</h2>
+          <div class="price">$${crypto.price.toFixed(2)}</div>
+          <div class="price-change ${
+            crypto.priceChange >= 0 ? "rising" : "falling"
+          }">
+            ${crypto.priceChange >= 0 ? "▲" : "▼"} ${Math.abs(
+          crypto.priceChange
+        ).toFixed(2)}%
+          </div>
+          <div class="volume">
+            Volume: ${this.formatVolume(crypto.volume)}
+            <div class="volume-bar">
+              <div class="volume-indicator" style="width: ${
+                crypto.volumeScore * 10
+              }%"></div>
+            </div>
+          </div>
+        `;
+        this.dashboardEl.appendChild(cardEl);
+      } else {
+        // Update existing card
+        const priceEl = cardEl.querySelector(".price");
+        const priceChangeEl = cardEl.querySelector(".price-change");
+        const volumeBarEl = cardEl.querySelector(".volume-indicator");
 
-    // Subscribe to alerts
-    this.allAlerts$.subscribe((alerts) => {
-      this.alertsContainerElem.innerHTML = "";
+        // Check if price changed to add flash effect
+        const prevPrice = this.lastPrices.get(crypto.symbol) || crypto.price;
+        const priceChanged = prevPrice !== crypto.price;
 
-      if (alerts.length === 0) {
-        this.alertsContainerElem.innerHTML = "<p>No alerts yet</p>";
-        return;
+        if (priceChanged) {
+          // Add flash effect class based on price direction
+          const flashClass = crypto.price > prevPrice ? "rising" : "falling";
+          priceEl.classList.add(flashClass);
+
+          // Remove flash effect after animation completes
+          setTimeout(() => priceEl.classList.remove(flashClass), 1000);
+        }
+
+        // Update values
+        priceEl.textContent = `$${crypto.price.toFixed(2)}`;
+        priceChangeEl.textContent = `${
+          crypto.priceChange >= 0 ? "▲" : "▼"
+        } ${Math.abs(crypto.priceChange).toFixed(2)}%`;
+        priceChangeEl.className = `price-change ${
+          crypto.priceChange >= 0 ? "rising" : "falling"
+        }`;
+        volumeBarEl.style.width = `${crypto.volumeScore * 10}%`;
       }
 
-      alerts.forEach((alert) => {
-        const alertElem = document.createElement("div");
-        alertElem.className = `alert-item alert-${alert.type}`;
-        alertElem.textContent = alert.text;
-        this.alertsContainerElem.appendChild(alertElem);
-      });
+      // Store current price for next comparison
+      this.lastPrices.set(crypto.symbol, crypto.price);
     });
   }
 
-  updateCryptoList(data) {
-    this.cryptoListElem.innerHTML = "";
+  updateConnectionStatus(status) {
+    this.connectionStatusEl.className = status;
 
-    data.cryptos.forEach((crypto) => {
-      const isUp = crypto.priceChange >= 0;
-      const priceChangeClass = isUp ? "price-up" : "price-down";
+    switch (status) {
+      case "connected":
+        this.connectionStatusEl.textContent = "Connected";
+        break;
+      case "disconnected":
+        this.connectionStatusEl.textContent =
+          "Disconnected - Click to reconnect";
+        break;
+      case "reconnecting":
+        this.connectionStatusEl.textContent = "Reconnecting...";
+        break;
+      case "connecting":
+        this.connectionStatusEl.textContent = "Connecting...";
+        break;
+      default:
+        this.connectionStatusEl.textContent =
+          "Connection Error - Click to retry";
+        break;
+    }
+  }
 
-      const cryptoItemElem = document.createElement("div");
-      cryptoItemElem.className = "crypto-item";
-
-      cryptoItemElem.innerHTML = `
-        <div class="crypto-price">
-          <strong>${crypto.symbol}:</strong> 
-          $${crypto.price.toFixed(2)}
-          <span class="${priceChangeClass}">
-            (${isUp ? "+" : ""}${crypto.priceChange.toFixed(2)}%)
-          </span>
-        </div>
-        <div class="crypto-volume">
-          Volume: 
-          <div class="volume-bar">
-            <div class="volume-fill" style="width: ${
-              crypto.volumeScore * 10
-            }%"></div>
-          </div>
-        </div>
+  showAlerts(alerts) {
+    alerts.forEach((alert) => {
+      const alertEl = document.createElement("div");
+      alertEl.className = "alert";
+      alertEl.innerHTML = `
+        <strong>${alert.symbol}</strong> ${alert.isPositive ? "up" : "down"} 
+        ${Math.abs(alert.change).toFixed(2)}% to $${alert.price.toFixed(2)}
       `;
 
-      this.cryptoListElem.appendChild(cryptoItemElem);
+      this.alertsEl.appendChild(alertEl);
+
+      // Remove alert after 5 seconds
+      setTimeout(() => {
+        if (alertEl.parentNode === this.alertsEl) {
+          alertEl.style.opacity = "0";
+          setTimeout(() => this.alertsEl.removeChild(alertEl), 300);
+        }
+      }, 5000);
     });
   }
 
-  // Method to manually trigger a refresh
-  refresh() {
-    this.refreshSubject.next();
+  formatVolume(volume) {
+    if (volume >= 1000000) {
+      return `${(volume / 1000000).toFixed(2)}M`;
+    } else if (volume >= 1000) {
+      return `${(volume / 1000).toFixed(2)}K`;
+    }
+    return volume.toFixed(2);
   }
 
-  // Clean up
   destroy() {
-    this.websocketService.close();
+    // Clean up all subscriptions
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 }

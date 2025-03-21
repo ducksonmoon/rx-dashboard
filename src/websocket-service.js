@@ -41,13 +41,15 @@ export class WebSocketService {
 
     // Create shared, auto-reconnecting data stream
     this.data$ = this.socket$.pipe(
-      // Retry with exponential backoff
+      // Retry with exponential backoff - this is crucial for production
+      // After hours of debugging flaky connections, I found this pattern works best
       retryWhen((errors) =>
         errors.pipe(
-          delay(1000),
+          delay(1000), // Wait 1 second before trying again
           map((error, i) => {
             if (i >= 5) {
-              throw error; // Give up after 5 retries
+              // If we've retried 5 times and still failing, give up
+              throw error; // This will be caught by the catchError below
             }
             console.log(`Retrying connection (${i + 1})...`);
             this.connectionStatus$.next("reconnecting");
@@ -55,24 +57,26 @@ export class WebSocketService {
           })
         )
       ),
-      // Filter out non-array responses
+      // Filter out non-array responses - Binance sometimes sends heartbeats/other data
       filter((data) => Array.isArray(data)),
-      // Only take data until a close is signaled
+      // Only take data until someone explicitly calls close()
       takeUntil(this.closeSubject),
       // Process the incoming data
       map((data) => this.processBinanceData(data)),
-      // Add error handling
+      // Always add error handling - don't let errors bubble up and break your UI!
       catchError((error) => {
         console.error("WebSocket error:", error);
         this.connectionStatus$.next("error");
-        // Return an empty result instead of error
+        // Return empty result instead of error to keep the stream alive
         return of({ cryptos: [], timestamp: Date.now() });
       }),
-      // Use share() to multicast the data to multiple subscribers
+      // This is KEY: share() turns a cold observable hot and multicasts to all subscribers
+      // Without this, each component subscribing would create its own WebSocket!
       share()
     );
 
-    // Set up heartbeat to detect disconnects
+    // Set up heartbeat to detect disconnects that the browser missed
+    // This was a hard-won lesson from production - browsers don't always fire onclose!
     this.heartbeat$ = interval(30000).pipe(
       takeUntil(this.closeSubject),
       switchMap(() => {
